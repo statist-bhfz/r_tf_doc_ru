@@ -37,3 +37,9 @@ library(tfdtasets)
 install_tensorflow()
 ```
 
+
+## Создание набора данных
+
+Наборы данных создаются из текстовых файлов, файлов в формате [tfrecords](https://www.tensorflow.org/api_docs/python/tf/io#tfrecords_format_details) или из данных в ОЗУ при помощи [соответствующих функций](https://tensorflow.rstudio.com/tools/tfdatasets/reference/#section-creating-datasets).
+
+### Текстовые файлы

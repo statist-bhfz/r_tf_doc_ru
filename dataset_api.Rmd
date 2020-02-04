@@ -8,7 +8,7 @@ output: html_document
 reticulate::use_condaenv("r-reticulate")
 ```
 
-```{r, echo=FALSE, message=FALSE}
+```{r message=FALSE, include=FALSE}
 # fix https://github.com/rstudio/keras/issues/930
 reticulate::py_config() 
 ```
@@ -64,10 +64,10 @@ install_tensorflow()
 library(tfdatasets)
 
 # создание спецификации для парсинга файла
-iris_spec <- csv_record_spec("iris.csv")
+iris_spec <- csv_record_spec("data/iris.csv")
 
 # чтение набора данных
-dataset <- text_line_dataset("iris.csv", record_spec = iris_spec) 
+dataset <- text_line_dataset("data/iris.csv", record_spec = iris_spec) 
 
 # структура полученного набора данных
 str(dataset)
@@ -86,7 +86,7 @@ iris_spec <- csv_record_spec(
 )
 
 # чтение набора данных
-dataset <- text_line_dataset("iris.csv", record_spec = iris_spec)
+dataset <- text_line_dataset("data/iris.csv", record_spec = iris_spec)
 ```
 
 Отметим, что мы также указали `skip = 1`, чтобы пропустить первую строку в файле, содержащую имена столбцов.
@@ -94,8 +94,157 @@ dataset <- text_line_dataset("iris.csv", record_spec = iris_spec)
 Поддерживаемые типы: целое число (integer), число с плавающей точкой (double) и строка (character). Вы также можете указывать типы в более компактной форме посредством односимвольных аббревиатур (например, `types = "dddi"`):
 
 ```{r}
-mtcars_spec <- csv_record_spec("mtcars.csv", types = "dididddiiii")
+mtcars_spec <- csv_record_spec("data/mtcars.csv", types = "dididddiiii")
 ```
 
 
 #### Параллельный парсинг
+
+Парсинг текстовых строк в требуемый формат может быть вычислительно затратным. Вы можете выполнять эти вычисления в параллельной режиме при помощи параметра `parallel_record`. Например:
+
+```{r}
+dataset <- text_line_dataset("data/iris.csv", 
+                             record_spec = iris_spec, 
+                             parallel_records = 4)
+```
+
+Также вы можете распараллелить чтение данных с диска при помощи буфера для предварительно загружаемых данных. Функция, которая позволяет импортировать данные подобным образом - `dataset_prefetch()`:
+
+```{r}
+dataset <- text_line_dataset("data/iris.csv", 
+                             record_spec = iris_spec,
+                             parallel_records = 4) %>% 
+  dataset_batch(128) %>% 
+  dataset_prefetch(1)
+```
+
+Результатом будет предварительная загрузка батча данных в фоновом потоке, то есть параллельно с операциями обучения модели.
+
+При наличии нескольких входных файлов вы можете распараллелить их чтение по нескольким ПК (шардирование) и/или по нескольким потокам на одном ПК (параллельное чтение с чередованием). Подробнее об этом см. в разделе "Чтение множественных файлов".
+
+
+### Файлы tfrecords
+
+Вы можете загружать данные из файлов в формате tfrecords при помощи функции `tfrecord_dataset()`.
+
+Часто бывает нужно отобразить записи из набора данных в последовательность именованных столбцов. Это можно сделать при помощи вызова `dataset_map()` в сочетании с функцией `tf$parse_single_example()`:
+
+```{r, eval=FALSE}
+# Создание набора данных, который читает наблюдения из двух файлов и 
+# извлекает изображение с меткой класса
+filenames <- c("/var/data/file1.tfrecord", 
+               "/var/data/file2.tfrecord")
+dataset <- tfrecord_dataset(filenames) %>%
+  dataset_map(function(example_proto) {
+    features <- list(
+      image = tf$FixedLenFeature(shape(), tf$string),
+      label = tf$FixedLenFeature(shape(), tf$int32)
+    )
+    tf$parse_single_example(example_proto, features)
+  })
+```
+
+Чтение файлов tfrecords также можно распараллелить при помощи параметра `num_parallel_reads`:
+
+```{r, eval=FALSE}
+filenames <- c("/var/data/file1.tfrecord", 
+               "/var/data/file2.tfrecord")
+dataset <- tfrecord_dataset(filenames, num_parallel_reads = 4)
+```
+
+
+## Базы данных SQLite
+
+Чтение наборов данных из БД SQLite осуществляется при помощи функции `sqlite_dataset()`. Для этого нужно указать имя файла с базой данный, SQL-запрос и спецификацию `sql_record_spec()`, которая описывает имена и типы данных для столбцов, участвующих в запросе. Например:
+
+```{r}
+record_spec <- sql_record_spec(
+  names = c("disp", "drat", "vs", "gear", "mpg", 
+            "qsec", "hp", "am", "wt",  "carb", "cyl"),
+  types = c(tf$float64, tf$int32, tf$float64, tf$int32, tf$float64, 
+            tf$float64, tf$float64, tf$int32, tf$int32, tf$int32, tf$int32)
+)
+
+dataset <- sqlite_dataset(
+  "data/mtcars.sqlite3",
+  "select * from mtcars",
+  record_spec
+)
+
+dataset
+```
+
+Обратите внимание: для чисел с плавающей точкой должны нужно использовать `tf$float64`, поскольку `tf$float32`не поддерживаются при чтении из БД SQLite.
+
+
+## Преобразования
+
+### Применение преобразований
+
+Вы можете применить произвольные функции для преобразования данных к записях в наборе данных при помощи `dataset_map() `. Например, преобразовать столбец "Species" при помощи прямого кодирования (one-hot encoding) можно следующим образом:
+
+```{r}
+dataset <- text_line_dataset("data/iris.csv", 
+                             record_spec = iris_spec,
+                             parallel_records = 4)
+
+dataset <- dataset %>% 
+  dataset_map(function(record) {
+    record$Species <- tf$one_hot(record$Species, 3L)
+    record
+  })
+
+dataset
+```
+
+Обратите внимание, что `dataset_map()` реализована как функция на языке R, но некоторые специальные ограничения, налагаемые на нее, позволяют ее выполнять не в интерпретаторе R, а как часть вычислительного графа TensorFlow.
+
+Для набора данных, созданного при помощи функции `text_line_dataset()`, передаваемая запись будет представлять собой именованный список тензоров (один тензор для каждого столбца). Возвращаемое значение должно быть другим набором тензоров, которые создаются при помощи функций TensorFlow (например, `tf$one_hot()`). Вызов функции `dataset_map()` конвертируется в операции вычислительного графа TensorFlow, которые выполняют пребразования с использованием нативного кода.
+
+
+#### Преобразования в параллельной режиме
+
+Вычислительно затратные преобразования могут выполняться в несколько потоков при помощи параметра `num_parallel_calls`:
+
+```{r}
+dataset <- text_line_dataset("data/iris.csv", 
+                             record_spec = iris_spec,
+                             parallel_records = 4)
+
+dataset <- dataset %>% 
+  dataset_map(num_parallel_calls = 4, function(record) {
+    record$Species <- tf$one_hot(record$Species, 3L)
+    record
+  })
+```
+
+Вы можете контролировать максимальное количество буферизируемых элементов при помощи `dataset_prefetch()`:
+
+```{r}
+dataset <- text_line_dataset("data/iris.csv", 
+                             record_spec = iris_spec,
+                             parallel_records = 4)
+
+dataset <- dataset %>% 
+  dataset_map(num_parallel_calls = 4, function(record) {
+    record$Species <- tf$one_hot(record$Species, 3L)
+    record
+  }) %>% 
+  dataset_prefetch(1)
+```
+
+При использовании батчей по время обучения можно оптимизировать производительность при помощи функции `dataset_map_and_batch()`, объединяющей операции преобразования данных и создания батча:
+
+```{r}
+dataset <- text_line_dataset("data/iris.csv", 
+                             record_spec = iris_spec,
+                             parallel_records = 4)
+
+dataset <- dataset %>% 
+  dataset_map_and_batch(batch_size = 128, function(record) {
+    record$Species <- tf$one_hot(record$Species, 3L)
+    record
+  }) %>% 
+  dataset_prefetch(1)
+```
+

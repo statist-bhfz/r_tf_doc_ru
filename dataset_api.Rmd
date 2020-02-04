@@ -81,7 +81,7 @@ iris_spec <- csv_record_spec(
   names = c("SepalLength", "SepalWidth", "PetalLength", "PetalWidth", 
             "Species"),
   types = c("double", "double", "double", "double", 
-            "integer"), 
+            "character"), 
   skip = 1
 )
 
@@ -233,7 +233,7 @@ dataset <- dataset %>%
   dataset_prefetch(1)
 ```
 
-При использовании батчей по время обучения можно оптимизировать производительность при помощи функции `dataset_map_and_batch()`, объединяющей операции преобразования данных и создания батча:
+При использовании батчей по время обучения можно оптимизировать производительность c помощью функции `dataset_map_and_batch()`, объединяющей операции преобразования данных и создания батча:
 
 ```{r}
 dataset <- text_line_dataset("data/iris.csv", 
@@ -246,5 +246,79 @@ dataset <- dataset %>%
     record
   }) %>% 
   dataset_prefetch(1)
+```
+
+
+### Выбор элементов
+
+Вы можете отбирать элементы в наборе данных по условия при помощи функции `dataset_filter()`, которая принимает на вход предикат и возвращает булев тензор для записей, которые должны быть включены в выдачу:
+
+```{r}
+mtcars_spec <- csv_record_spec("data/mtcars.csv", types = "dididddiiii")
+
+dataset <- text_line_dataset("data/mtcars.csv",
+                             record_spec = mtcars_spec) %>%
+  dataset_filter(function(record) {
+    record$mpg >= 20
+})
+
+dataset <- text_line_dataset("data/mtcars.csv",
+                             record_spec = mtcars_spec) %>%
+  dataset_filter(function(record) {
+    record$mpg >= 20 & record$cyl >= 6L
+  })
+```
+
+Заметим, что функции внутри предиката должны быть тензорными операциями (tf$not_equal, tf$less и т.д.). Предоставляются соответствующие методы для стандартных операторов сравнения (<, >, <=) и логических операторов (!, &, |).
+
+
+### Признаки и целевая переменная
+
+Распространенным преобразованием является превращение таблицы, созданной при помощи `text_line_dataset()` или `tfrecord_dataset()`, в список из двух элементов: "x" (признаки) и "y" (целевая переменная). Для этих целей служит функция `dataset_prepare()`:
+
+```{r}
+mtcars_dataset <- text_line_dataset("data/mtcars.csv", 
+                                    record_spec = mtcars_spec) %>% 
+  dataset_prepare(x = c(mpg, disp), y = cyl)
+
+iris_dataset <- text_line_dataset("data/iris.csv", 
+                                  record_spec = iris_spec) %>% 
+  dataset_prepare(x = -Species, y = Species)
+```
+
+Функция `dataset_prepare()` также также работает со стандартным формульным интерфейсом R:
+
+
+```{r}
+mtcars_dataset <- text_line_dataset("data/mtcars.csv", 
+                                    record_spec = mtcars_spec) %>% 
+  dataset_prepare(cyl ~ mpg + disp)
+```
+
+If you are batching your data for training you add a batch_size parameter to fuse together the dataset_prepare() and dataset_batch() steps (which generally results in faster training). For example:
+
+```{r}
+mtcars_dataset <- text_line_dataset("mtcars.csv", record_spec = mtcars_spec) %>% 
+  dataset_prepare(cyl ~ mpg + disp, batch_size = 16)
+```
+
+
+### Перемешивание данных и формирование батчей
+
+There are several functions which control how batches are drawn from the dataset. For example, the following specifies that data will be drawn in batches of 128 from a shuffled window of 1000 records, and that the dataset will be repeated for 10 epochs:
+
+```{r}
+dataset <- dataset %>% 
+  dataset_shuffle(1000) %>%
+  dataset_repeat(10) %>% 
+  dataset_batch(128) %>% 
+```
+
+Note that you can optimize performance by fusing the shuffle and repeat operations into a single step using the dataset_shuffle_and_repeat() function. For example:
+
+```{r}
+dataset <- dataset %>% 
+  dataset_shuffle_and_repeat(buffer_size = 1000, count = 10) %>%
+  dataset_batch(128)
 ```
 

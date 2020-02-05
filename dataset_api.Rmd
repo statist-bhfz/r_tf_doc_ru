@@ -379,7 +379,7 @@ dataset <- dataset %>%
 
 ### Полный пример
 
-Ниже приводится полный пример совместного использования различных преобразования: фильтрация наблюдений, разбивка на "x" и "y", перемешивание и деление на батчи.
+Ниже приводится полный пример совместного использования различных преобразований: фильтрация наблюдений, разбивка на "x" и "y", перемешивание и деление на батчи.
 
 
 ```{r}
@@ -400,10 +400,33 @@ The method for reading data from a TensorFlow Dataset varies depending upon whic
 
 The sections below provide additional details and examples for each of the supported APIs
 
+
 ### Пакет keras
 
+ВАЖНОЕ ПРИМЕЧАНИЕ: для этих примеров требуются актуальные версии **Keras** (>=2.2) и **TensorFlow** (>=1.9). Установить их можно стандартным способом:
 
-Создать файлы в формате tfrecords можно при помощи [данного скрипта]( https://github.com/datamadness/Feeding-TensorFlow-from-drive-MNIST-Example/blob/master/MNIST2TFRfilesDataAPI.py), заменив в нем `tf.python_io.TFRecordWriter` на `tf.io.TFRecordWriter` и указав `numFiles = 1`.
+```{r, eval=FALSE}
+library(keras)
+install_keras()
+```
+
+Модели **Keras** часто обучаются путем передачи хранящихся в памяти массивов в функцию `fit()`:
+
+```{r, eval=FALSE}
+model %>% fit(
+  x_train, y_train, 
+  epochs = 30, 
+  batch_size = 128
+)
+```
+
+Это требует предварительной загрузки данных в таблицу или матрицу. Можно использовать `train_on_batch()` для передачи данных в виде батчей, но и при этом все преобразования выполняются на стороне R, а не в нативном коде.
+
+Альтернативой является передача в функции `fit()` и `evaluate()` наборов данных, созданных при помощи **tfdatasets**.
+
+Ниже рассмотрен пример для классической задачи классификации MNIST.
+
+Создать файлы в формате tfrecords можно при помощи [данного скрипта]( https://github.com/datamadness/Feeding-TensorFlow-from-drive-MNIST-Example/blob/master/MNIST2TFRfilesDataAPI.py), заменив в нем `tf.python_io.TFRecordWriter` на `tf.io.TFRecordWriter` и указав `numFiles = 1` - *прим. пер.*
 
 ```{r, eval=FALSE}
 library(keras)
@@ -478,10 +501,108 @@ score <- model %>% evaluate(
 print(score)
 ```
 
+Обратите внимание, что все предварительная обработка выполняется внутри `dataset_map()`. Мы указываем `drop_remainder = TRUE`, чтобы все батчи получались одинакового размера, как того требует **Keras**.
 
 
 ### Пакет tensorflow
 
+Для получения батчей в виде тензоров служат функции `make_iterator_one_shot()` и `iterator_get_next()`:
+
+```{r}
+dataset <- text_line_dataset("data/mtcars.csv", 
+                             record_spec = mtcars_spec) %>% 
+  dataset_prepare(cyl ~ mpg + disp) %>% 
+  dataset_shuffle(20) %>% 
+  dataset_batch(5)
+
+iter <- make_iterator_one_shot(dataset)
+next_batch <- iterator_get_next(iter)
+next_batch
+```
+
+При их использовании нужно указывать, на каком этапе прекращать генерацию новых батчей. Один из подходов состоит в бесконечном повторении набора данных при помощи функции `dataset_repeat()` с указанием требуемого количества итераций (`steps <- 200`): 
+
+```{r}
+mtcars_spec <- csv_record_spec("data/mtcars.csv")
+dataset <- text_line_dataset("data/mtcars.csv", 
+                             record_spec = mtcars_spec) %>% 
+  dataset_shuffle(5000) %>% 
+  dataset_repeat() %>% # повторять бесконечно
+  dataset_prepare(x = c(mpg, disp), y = cyl) %>% 
+  dataset_batch(128)  
+
+iter <- make_iterator_one_shot(dataset)
+
+steps <- 200
+for (i in 1:steps) {
+  # обучение модели
+}
+```
+
+Вместо указания количества итераций в явном виде можно задать критерий останова, например, на основании выхода кривой обучения на плато. 
+
+Другой подход заключается в определении момента, когда все батчи были получены из набора данных. После исчерпания батчей возникает исключение out of range, которое может быть перехвачено при помощи `out_of_range_handler` и функции `tryCatch()`:
+
+```{r, eval=FALSE}
+tryCatch({
+  while(TRUE) {
+    batch <- iterator_get_next(iter)
+    str(batch)
+  }
+}, error = out_of_range_handler)
+```
+
+Этот код можно переписать более изящно, используя функцию `until_out_of_range()`:
+
+```{r, eval=FALSE}
+until_out_of_range({
+  batch <- iterator_get_next(iter)
+  str(batch)
+})
+```
+
+
 ## Чтение множественных файлов
 
+Множественные файлы могут обрабатываться параллельно на одном или нескольких ПК. Возможности для этого предоставляет функция `read_files()`.
+
+Пример с чтением всех CSV-файлов в папке посредством функции `text_line_dataset()`:
+
+```{r, eval=FALSE}
+dataset <- read_files("data/*.csv", 
+                      text_line_dataset, 
+                      record_spec = mtcars_spec,
+                      parallel_files = 4, 
+                      parallel_interleave = 16) %>% 
+  dataset_prefetch(5000) %>% 
+  dataset_shuffle_and_repeat(buffer_size = 1000, count = 3) %>% 
+  dataset_batch(128)
+```
+
+`parallel_files = 4` задает параллельное чтение 4 файлов, а `parallel_interleave = 16` обеспечивает наличие в итоговом наборе данных блоков из 16 последовательных записей из каждого входного файла.
+
+
 ### Использование нескольких ПК
+
+При обучении на нескольких ПК можно использовать параллельную загрузку данных на каждом из них (шардирование):
+
+```{r, eval=FALSE}
+# Флаги скрипта для обучения (информация о шардировании предоставляется 
+# управляющим кодом, который запускает обучение)
+FLAGS <- flags(
+  flag_integer("num_shards", 1),
+  flag_integer("shard_index", 1)
+)
+
+dataset <- read_files("data/*.csv", 
+                      text_line_dataset, 
+                      record_spec = mtcars_spec,
+                      parallel_files = 4, 
+                      parallel_interleave = 16,
+                      num_shards = FLAGS$num_shards, 
+                      shard_index = FLAGS$shard_index) %>% 
+  dataset_shuffle_and_repeat(buffer_size = 1000, count = 3) %>% 
+  dataset_batch(128) %>% 
+  dataset_prefetch(1)
+```
+

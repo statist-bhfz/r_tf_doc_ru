@@ -1,5 +1,5 @@
 ---
-title: "dataset_api"
+title: "R interface to TensorFlow Dataset API"
 output: html_document
 ---
 
@@ -190,7 +190,9 @@ dataset <- text_line_dataset("data/iris.csv",
 
 dataset <- dataset %>% 
   dataset_map(function(record) {
-    record$Species <- tf$one_hot(record$Species, 3L)
+    record$Species <- tf$one_hot(
+      tf$strings$to_number(record$Species, tf$int32), 
+      3L)
     record
   })
 
@@ -213,7 +215,9 @@ dataset <- text_line_dataset("data/iris.csv",
 
 dataset <- dataset %>% 
   dataset_map(num_parallel_calls = 4, function(record) {
-    record$Species <- tf$one_hot(record$Species, 3L)
+    record$Species <- tf$one_hot(
+      tf$strings$to_number(record$Species, tf$int32), 
+      3L)
     record
   })
 ```
@@ -227,7 +231,9 @@ dataset <- text_line_dataset("data/iris.csv",
 
 dataset <- dataset %>% 
   dataset_map(num_parallel_calls = 4, function(record) {
-    record$Species <- tf$one_hot(record$Species, 3L)
+    record$Species <- tf$one_hot(
+      tf$strings$to_number(record$Species, tf$int32), 
+      3L)
     record
   }) %>% 
   dataset_prefetch(1)
@@ -242,7 +248,9 @@ dataset <- text_line_dataset("data/iris.csv",
 
 dataset <- dataset %>% 
   dataset_map_and_batch(batch_size = 128, function(record) {
-    record$Species <- tf$one_hot(record$Species, 3L)
+    record$Species <- tf$one_hot(
+      tf$strings$to_number(record$Species, tf$int32), 
+      3L)
     record
   }) %>% 
   dataset_prefetch(1)
@@ -295,30 +303,185 @@ mtcars_dataset <- text_line_dataset("data/mtcars.csv",
   dataset_prepare(cyl ~ mpg + disp)
 ```
 
-If you are batching your data for training you add a batch_size parameter to fuse together the dataset_prepare() and dataset_batch() steps (which generally results in faster training). For example:
+Если при обучении вы используете батчи, при помощи параметра `batch_size` можно объединить этапы `dataset_prepare()` и `dataset_batch()`, что, как правило, ускоряет работу:
 
 ```{r}
-mtcars_dataset <- text_line_dataset("mtcars.csv", record_spec = mtcars_spec) %>% 
+mtcars_dataset <- text_line_dataset("data/mtcars.csv", 
+                                    record_spec = mtcars_spec) %>% 
   dataset_prepare(cyl ~ mpg + disp, batch_size = 16)
 ```
 
 
 ### Перемешивание данных и формирование батчей
 
-There are several functions which control how batches are drawn from the dataset. For example, the following specifies that data will be drawn in batches of 128 from a shuffled window of 1000 records, and that the dataset will be repeated for 10 epochs:
+Существует несколько функций, управляющих формированием батчей. Например, следующий код задает формирование батчей по 128 элементов из наблюдений, перемешиваемых внутри скользящего окна размером 1000; набор данных повторяется 10 раз для обучения в течение 10 эпох:
 
 ```{r}
 dataset <- dataset %>% 
   dataset_shuffle(1000) %>%
   dataset_repeat(10) %>% 
-  dataset_batch(128) %>% 
-```
-
-Note that you can optimize performance by fusing the shuffle and repeat operations into a single step using the dataset_shuffle_and_repeat() function. For example:
-
-```{r}
-dataset <- dataset %>% 
-  dataset_shuffle_and_repeat(buffer_size = 1000, count = 10) %>%
   dataset_batch(128)
 ```
 
+Панее производительность можно оптимизировать путем объединения перемешивания и повторения данных в один шаг при помощу функции `dataset_shuffle_and_repeat()`, но теперь так делать не рекомендуется:
+
+```{r, eval=FALSE}
+dataset <- dataset %>% 
+  dataset_shuffle_and_repeat(buffer_size = 1000, count = 10) %>%
+  dataset_batch(128)
+# shuffle_and_repeat (from tensorflow.python.data.experimental.ops.shuffle_ops) 
+# is deprecated and will be removed in a future version.
+# Instructions for updating:
+# Use `tf.data.Dataset.shuffle(buffer_size, seed)` followed by 
+# `tf.data.Dataset.repeat(count)`. Static tf.data optimizations will 
+# take care of using the fused implementation.
+```
+
+
+### Предварительная загрузка
+
+Ранее мы упоминали функцию `dataset_prefetch()`, позволяющую предварительно загружать указанное количество элементов (или батчей, если таковые используются). Например:
+
+```{r}
+dataset <- text_line_dataset("data/iris.csv", 
+                             record_spec = iris_spec,
+                             parallel_records = 4)
+
+dataset <- dataset %>% 
+  dataset_map_and_batch(batch_size = 128, function(record) {
+    record$Species <- tf$one_hot(
+      tf$strings$to_number(record$Species, tf$int32), 
+      3L)
+    record
+  }) %>% 
+  dataset_prefetch(1)
+```
+
+При использовании GPU данные могут быть предварительно загружены в память GPU с помощью `dataset_prefetch_to_device() `:
+
+```{r}
+dataset <- text_line_dataset("data/iris.csv", 
+                             record_spec = iris_spec,
+                             parallel_records = 4)
+
+dataset <- dataset %>% 
+  dataset_map_and_batch(batch_size = 128, function(record) {
+    record$Species <- tf$one_hot(
+      tf$strings$to_number(record$Species, tf$int32), 
+      3L)
+    record
+  }) %>% 
+  dataset_prefetch_to_device("/gpu:0")
+```
+
+В последнем примере размер буфера для предварительной загрузки определяется автоматически (вручную его можно задать параметром `buffer_size`).
+
+
+### Полный пример
+
+Ниже приводится полный пример совместного использования различных преобразования: фильтрация наблюдений, разбивка на "x" и "y", перемешивание и деление на батчи.
+
+
+```{r}
+dataset <- text_line_dataset("data/mtcars.csv", 
+                             record_spec = mtcars_spec) %>%
+  dataset_filter(function(record) {
+    record$mpg >= 20 & record$cyl >= 6L
+  }) %>% 
+  dataset_shuffle_and_repeat(buffer_size = 1000, count = 10) %>% 
+  dataset_prepare(cyl ~ mpg + disp, batch_size = 128) %>% 
+  dataset_prefetch(1)
+```
+
+
+## Чтение наборов данных
+
+The method for reading data from a TensorFlow Dataset varies depending upon which API you are using to build your models. If you are using the keras, then TensorFlow Datasets can be used much like in-memory R matrices and arrays. If you are using the lower-level tensorflow core API then you’ll use explicit dataset iteration functions.
+
+The sections below provide additional details and examples for each of the supported APIs
+
+### Пакет keras
+
+
+Создать файлы в формате tfrecords можно при помощи [данного скрипта]( https://github.com/datamadness/Feeding-TensorFlow-from-drive-MNIST-Example/blob/master/MNIST2TFRfilesDataAPI.py), заменив в нем `tf.python_io.TFRecordWriter` на `tf.io.TFRecordWriter` и указав `numFiles = 1`.
+
+```{r, eval=FALSE}
+library(keras)
+library(tfdatasets)
+
+batch_size = 128
+steps_per_epoch = 500
+
+# Функция для чтения и обработки набора данных MNIST
+mnist_dataset <- function(filename) {
+  dataset <- tfrecord_dataset(filename) %>%
+    dataset_map(function(example_proto) {
+
+      # Парсинг 
+      features <- tf$io$parse_single_example(
+        example_proto,
+        features = list(
+          height = tf$io$FixedLenFeature(shape(), tf$int64),
+          width = tf$io$FixedLenFeature(shape(), tf$int64),
+          img_string = tf$io$VarLenFeature(tf$float32),
+          label = tf$io$FixedLenFeature(shape(), tf$int64)
+        )
+      )
+
+      # Обработка изображения
+      image <- tf$divide(features$img_string, 255)
+      image <- tf$sparse$to_dense(image)
+      # image <- tf$reshape(image, c(features$height, features$width))
+      # image <- tf$expand_dims(image, -1L)
+      
+      # one-hot кодирование метки класса
+      label <- tf$one_hot(tf$cast(features$label, dtype = tf$int32), 10L)
+
+      list(image, label)
+    }) %>%
+    dataset_repeat() %>%
+    dataset_shuffle(1000) %>%
+    dataset_batch(batch_size, drop_remainder = TRUE) %>%
+    dataset_prefetch(1)
+}
+
+# Проверка
+# iter <- dataset %>% make_iterator_one_shot()
+# iterator_get_next(iter)
+  
+model <- keras_model_sequential() %>%
+  layer_dense(units = 256, activation = "relu", input_shape = c(784)) %>%
+  layer_dropout(rate = 0.4) %>%
+  layer_dense(units = 128, activation = "relu") %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 10, activation = "softmax")
+
+model %>% compile(
+  loss = "categorical_crossentropy",
+  optimizer = optimizer_rmsprop(),
+  metrics = c('accuracy')
+)
+
+history <- model %>% fit(
+  mnist_dataset("data/MNIST_train_data_strings_0.tfrecord"),
+  steps_per_epoch = steps_per_epoch,
+  epochs = 20,
+  validation_data = mnist_dataset("data/MNIST_train_data_strings_0.tfrecord"),
+  validation_steps = steps_per_epoch
+)
+
+score <- model %>% evaluate(
+  mnist_dataset("mnist/test.tfrecords"),
+  steps = steps_per_epoch
+)
+
+print(score)
+```
+
+
+
+### Пакет tensorflow
+
+## Чтение множественных файлов
+
+### Использование нескольких ПК

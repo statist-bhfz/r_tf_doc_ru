@@ -323,7 +323,7 @@ dataset <- dataset %>%
   dataset_batch(128)
 ```
 
-Панее производительность можно оптимизировать путем объединения перемешивания и повторения данных в один шаг при помощу функции `dataset_shuffle_and_repeat()`, но теперь так делать не рекомендуется:
+Ранее производительность можно было оптимизировать путем объединения перемешивания и повторения данных в один шаг при помощу функции `dataset_shuffle_and_repeat()`, но теперь так делать не рекомендуется:
 
 ```{r, eval=FALSE}
 dataset <- dataset %>% 
@@ -396,10 +396,9 @@ dataset <- text_line_dataset("data/mtcars.csv",
 
 ## Чтение наборов данных
 
-The method for reading data from a TensorFlow Dataset varies depending upon which API you are using to build your models. If you are using the keras, then TensorFlow Datasets can be used much like in-memory R matrices and arrays. If you are using the lower-level tensorflow core API then you’ll use explicit dataset iteration functions.
+Методы чтения данных различаются в зависимости от API, используемых при построении моделей. Наборы данных `tfdatasets` могут быть использованы совместно с **Keras** примерно так же, как хранящиеся в ОЗУ матрицы и массивы; при использовании низкоуровневого интерфейса **TensorFlow** потребуется явно вызывать функцию-итератор.
 
-The sections below provide additional details and examples for each of the supported APIs
-
+В этом разделе приводятся примеры для обоих вариантов.
 
 ### Пакет keras
 

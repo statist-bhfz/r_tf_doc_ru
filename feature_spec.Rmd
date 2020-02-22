@@ -1,0 +1,199 @@
+---
+title: "Feature Spec interface"
+output: html_document
+---
+
+```{r, echo=FALSE}
+# knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+reticulate::use_condaenv("r-reticulate")
+```
+
+```{r message=FALSE, include=FALSE}
+# fix https://github.com/rstudio/keras/issues/930
+reticulate::py_config() 
+```
+
+
+# Перевод https://tensorflow.rstudio.com/guide/tfdatasets/feature_spec/
+
+В этом руководстве будут рассмотрены основы использования интефейса `feature_spec()` пакета `tfdatasets`. Перед прочтением полезно ознакомиться с [R interface to TensorFlow Dataset API](http://biostat-r.blogspot.com/2020/02/r-interface-to-tensorflow-dataset-api.html).
+
+`feature_spec()` в R представляет собой дружественный интерфейс к модулю `tf.feature_column` в Python, который позволяет задавать преобразования и представления столбцов при работе с табличными данными. Реализация в R выполнена в едином стиле с пакетом `recipes`, краткий обзор возможностей которого был рассмотрен в публикации [Инфраструктура для обучения моделей на R: rsample и recipes ](http://biostat-r.blogspot.com/2019/06/rrsampe-recipes.html).
+
+Мы будем использовать набор данных `hearts`, загрузив его при помощи `data(hearts)`.
+
+```{r}
+library(tfdatasets)
+library(dplyr)
+
+data(hearts)
+
+head(hearts)
+```
+
+Мы хотим при помощи **Keras** обучить модель для предсказания целевой перенной, но сначала нужно подготовить данные. Требуется преобразовать категориальные переменные в некоторый набор признаков; как правило, нужно также выполнить нормализацию всех количественных переменных.
+
+Интефейс `feature_spec()` работает с таблицами (`data.frame`) или наборами данных `tfdatasets`.
+
+```{r}
+ids_train <- sample.int(nrow(hearts), 
+                        size = 0.75 * nrow(hearts))
+hearts_train <- hearts[ids_train, ]
+hearts_test <- hearts[-ids_train, ]
+```
+
+Сперва создадим спецификацию признаков:
+
+```{r}
+spec <- feature_spec(hearts_train, target ~ .)
+
+spec
+class(spec)
+```
+
+После создания спецификации (объект класса `"FeatureSpec"`) нужно задать типы переменных. Это реализуется посредством добавления "шагов" к спецификации ("рецепту"):
+
+```{r}
+spec <- spec %>% 
+  step_numeric_column(
+    all_numeric(), -cp, -restecg, -exang, -sex, -fbs,
+    normalizer_fn = scaler_standard()
+  ) %>% 
+  step_categorical_column_with_vocabulary_list(thal)
+```
+
+Для определения типов переменных доступны следующие "шаги":
+
+* `step_numeric_column()` для количественных переменных. Параметр `normalizer_fn` позволяет задать функцию для преобразования данных, работающую в графе вычислений TensorFlow (то есть она должна состоят из операторов TensorFlow);
+
+* `step_categorical_column_with_vocabulary_list()` для категориальных переменных с фиксированным набором значений. Если не задавать `vocabulary_list`, в качестве списка будут использованы найденные в наборе данных уникальные значения;
+
+* `step_categorical_column_with_hash_bucket()` для категориальных переменных с использованием [хеширования](https://medium.com/value-stream-design/introducing-one-of-the-best-hacks-in-machine-learning-the-hashing-trick-bf6a9c8af18f);
+
+* `step_categorical_column_with_identity()` для целочисленного кодирования категориальных переменных (label encoding);
+
+* `step_categorical_column_with_vocabulary_file()` - аналог `step_categorical_column_with_vocabulary_list()` для случая, когда набор возможных значений хранится в файле.
+
+Также можно использовать селекторы:
+
+* `starts_with()`, `ends_with()`, `matches()` и другие из `tidyselect`;
+
+* `all_numeric()` для выбора всех количественных переменных;
+
+* `all_nominal()` для выбора всех категориальных переменных;
+
+* `has_type("float32")` для выбора на основе типа данных TensorFlow.
+
+Готовый "рецепт" выглядит следующим образом:
+
+```{r}
+spec
+```
+
+После указания типов данных можно добавить необходимые преобразования, например, выполнить биннинг количественной переменной `age`:
+
+```{r}
+spec <- spec %>% 
+  step_bucketized_column(age, 
+                         boundaries = c(18, 25, 30, 35, 40, 
+                                        45, 50, 55, 60, 65))
+```
+
+Также можно указать способ представления категориальных переменных:
+
+```{r}
+spec <- spec %>% 
+  step_indicator_column(thal) %>% 
+  step_embedding_column(thal, dimension = 2)
+```
+
+Взаимодействия между переменными добавляются при помощи `step_crossed_column()`:
+
+```{r}
+spec <- spec %>% 
+  step_crossed_column(thal_and_age = c(thal, bucketized_age), 
+                      hash_bucket_size = 1000) %>% 
+  step_indicator_column(thal_and_age)
+```
+
+Отметим, что `thal_and_age` является категориальной переменной, поэтому требуется задать ее преобразование в числовой вид. `bucketized_age` - имя по умолчанию, заданное для результата применения `step_bucketized_column` к переменной `age`.
+
+"Рецепт" может быть задан путем объединения в цепочку всех "шагов":
+
+```{r}
+spec <- feature_spec(hearts_train, target ~ .) %>% 
+  step_numeric_column(
+    all_numeric(), -cp, -restecg, -exang, -sex, -fbs,
+    normalizer_fn = scaler_standard()
+  ) %>% 
+  step_categorical_column_with_vocabulary_list(thal) %>% 
+  step_bucketized_column(age, 
+                         boundaries = c(18, 25, 30, 35, 40, 
+                                        45, 50, 55, 60, 65)) %>% 
+  step_indicator_column(thal) %>% 
+  step_embedding_column(thal, dimension = 2) %>% 
+  step_crossed_column(c(thal, bucketized_age), 
+                      hash_bucket_size = 10) %>%
+  step_indicator_column(crossed_thal_bucketized_age)
+```
+
+After defining the recipe we need to fit it. It’s when fitting that we compute the vocabulary list for categorical variables or find the mean and standard deviation for the normalizing functions. Fitting involves evaluating the full dataset, so if you have provided the vocabulary list and your columns are already normalized you can skip the fitting step (TODO).
+
+In our case, we will fit the feature spec, since we didn’t specify the vocabulary list for the categorical variables.
+
+```{r}
+spec_prep <- fit(spec)
+```
+
+After preparing we can see the list of dense features that were defined:
+
+```{r}
+str(spec_prep$dense_features())
+```
+
+Now we are ready to define our model in Keras. We will use a specialized layer_dense_features that knows what to do with the feature columns specification.
+
+We also use a new layer_input_from_dataset that is useful to create a Keras input object copying the structure from a data.frame or TensorFlow dataset.
+
+```{r}
+library(keras)
+
+input <- layer_input_from_dataset(hearts_train %>% select(-target))
+
+output <- input %>% 
+  layer_dense_features(dense_features(spec_prep)) %>% 
+  layer_dense(units = 32, activation = "relu") %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+
+model <- keras_model(input, output)
+
+model %>% compile(
+  loss = loss_binary_crossentropy, 
+  optimizer = "adam", 
+  metrics = "binary_accuracy"
+)
+```
+
+Обучение модели:
+
+```{r}
+history <- model %>% 
+  fit(
+    x = hearts_train %>% select(-target),
+    y = hearts_train$target, 
+    epochs = 15, 
+    validation_split = 0.2
+  )
+```
+
+```{r}
+plot(history)
+```
+
+Выполним предсказания для тестовых данных и посчитаем AUC в качестве метрики качества:
+
+```{r}
+hearts_test$pred <- predict(model, hearts_test)
+Metrics::auc(hearts_test$target, hearts_test$pred)
+```
+

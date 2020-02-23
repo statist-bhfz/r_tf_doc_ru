@@ -13,10 +13,9 @@ reticulate::use_condaenv("r-reticulate")
 reticulate::py_config() 
 ```
 
-
 # Перевод https://tensorflow.rstudio.com/guide/tfdatasets/feature_spec/
 
-В этом руководстве будут рассмотрены основы использования интефейса `feature_spec()` пакета `tfdatasets`. Перед прочтением полезно ознакомиться с [R interface to TensorFlow Dataset API](http://biostat-r.blogspot.com/2020/02/r-interface-to-tensorflow-dataset-api.html).
+В этом руководстве будут рассмотрены основы использования интерфейса `feature_spec()` пакета `tfdatasets`. Перед прочтением полезно ознакомиться с [R interface to TensorFlow Dataset API](http://biostat-r.blogspot.com/2020/02/r-interface-to-tensorflow-dataset-api.html).
 
 `feature_spec()` в R представляет собой дружественный интерфейс к модулю `tf.feature_column` в Python, который позволяет задавать преобразования и представления столбцов при работе с табличными данными. Реализация в R выполнена в едином стиле с пакетом `recipes`, краткий обзор возможностей которого был рассмотрен в публикации [Инфраструктура для обучения моделей на R: rsample и recipes ](http://biostat-r.blogspot.com/2019/06/rrsampe-recipes.html).
 
@@ -31,9 +30,9 @@ data(hearts)
 head(hearts)
 ```
 
-Мы хотим при помощи **Keras** обучить модель для предсказания целевой перенной, но сначала нужно подготовить данные. Требуется преобразовать категориальные переменные в некоторый набор признаков; как правило, нужно также выполнить нормализацию всех количественных переменных.
+Мы хотим при помощи **Keras** обучить модель для предсказания целевой переменной, но сначала нужно подготовить данные. Требуется преобразовать категориальные переменные в некоторый набор признаков; как правило, нужно также выполнить нормализацию всех количественных переменных.
 
-Интефейс `feature_spec()` работает с таблицами (`data.frame`) или наборами данных `tfdatasets`.
+Интерфейс `feature_spec()` работает с таблицами (`data.frame`) или наборами данных `tfdatasets`.
 
 ```{r}
 ids_train <- sample.int(nrow(hearts), 
@@ -137,9 +136,7 @@ spec <- feature_spec(hearts_train, target ~ .) %>%
   step_indicator_column(crossed_thal_bucketized_age)
 ```
 
-After defining the recipe we need to fit it. It’s when fitting that we compute the vocabulary list for categorical variables or find the mean and standard deviation for the normalizing functions. Fitting involves evaluating the full dataset, so if you have provided the vocabulary list and your columns are already normalized you can skip the fitting step (TODO).
-
-In our case, we will fit the feature spec, since we didn’t specify the vocabulary list for the categorical variables.
+После создания "рецепта" нужно выполнить оценку параметров заданных в нем преобразований, например, составить список значений категориальных переменных или найти среднее значение и стандартное отклонение для нормализации. Оценка параметров выполняется на всем наборе данных, использованном при создании "рецепта" или переданном в вызов функции `fit()`.
 
 ```{r}
 spec_prep <- fit(spec)
@@ -151,9 +148,7 @@ After preparing we can see the list of dense features that were defined:
 str(spec_prep$dense_features())
 ```
 
-Now we are ready to define our model in Keras. We will use a specialized layer_dense_features that knows what to do with the feature columns specification.
-
-We also use a new layer_input_from_dataset that is useful to create a Keras input object copying the structure from a data.frame or TensorFlow dataset.
+Теперь мы можем создать подходящую модель в **Keras**. Для этого используем специальный слой `layer_dense_features`, который умеет обрабатывать признаки, созданные согласно "рецепту". Также используется новый входной слой `layer_input_from_dataset` для подачи в модель данных из таблицы или набора данных `tfdatasets`.
 
 ```{r}
 library(keras)
